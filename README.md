@@ -1,5 +1,7 @@
-# CarND-Path-Planning-Project
-Self-Driving Car Engineer Nanodegree Program
+# My solution for CarND-Path-Planning-Project
+---
+[![Udacity - Self-Driving Car NanoDegree](https://s3.amazonaws.com/udacity-sdc/github/shield-carnd.svg)](http://www.udacity.com/drive)
+
    
 ### Simulator.
 You can download the Term3 Simulator which contains the Path Planning Project from the [releases tab (https://github.com/udacity/self-driving-car-sim/releases/tag/T3_v1.2).  
@@ -92,54 +94,247 @@ A really helpful resource for doing this project and creating smooth trajectorie
     git checkout e94b6e1
     ```
 
-## Editor Settings
-
-We've purposefully kept editor configuration files out of this repo in order to
-keep it as simple and environment agnostic as possible. However, we recommend
-using the following settings:
-
-* indent using spaces
-* set tab width to 2 spaces (keeps the matrices in source code aligned)
 
 ## Code Style
 
 Please (do your best to) stick to [Google's C++ style guide](https://google.github.io/styleguide/cppguide.html).
 
-## Project Instructions and Rubric
 
-Note: regardless of the changes you make, your project must be buildable using
-cmake and make!
+---
+## Overview of the solution
+
+Path planning is the core of the autonomous driving technique. It plays a role like human brain. By combining all the information from other sensors, the most optimal (safe, efficient, legal) path for the future should be generated. As the slide shown in the lecture,  
+
+![alt text](slide1.png)
+*slide from the lecture*
+
+The inputs for path planning are 
+
+* the sensor fusion outputs
+* localization of my car
+* predictions of the future states of surrounding cars
+
+Below are my steps for achieving the final solution:
+
+## Make the car move smoothly
+
+Here is the solution for smoothly driving the car. The implementation mainly considers three points:
+
+* Spline for smooth trajectory generation
+* Starting point definition in order to maintain the continuity of the generated trajectory.
+* Coordinate transformation from global map (x,y) to local car coordinate (x,y), in order to easily create the interpolated points based on the spline.
 
 
-## Call for IDE Profiles Pull Requests
 
-Help your fellow students!
+```
+// using previous path points for trajectory generation
+          if (prev_size < 2) {
+            // tangent to the path
+            double ref_x_prev = mycar.x - cos(mycar.yaw);
+            double ref_y_prev = mycar.y - sin(mycar.yaw);
 
-We decided to create Makefiles with cmake to keep this project as platform
-agnostic as possible. Similarly, we omitted IDE profiles in order to ensure
-that students don't feel pressured to use one IDE or another.
+            // cout<<"ref_x_prev "<< ref_x_prev <<endl;
+            // cout<<"ref_x "<< ref_x <<endl;
+            
+            ptsx.push_back(ref_x_prev);
+            ptsx.push_back(ref_x);
 
-However! I'd love to help people get up and running with their IDEs of choice.
-If you've created a profile for an IDE that you think other students would
-appreciate, we'd love to have you add the requisite profile files and
-instructions to ide_profiles/. For example if you wanted to add a VS Code
-profile, you'd add:
+            ptsy.push_back(ref_y_prev);
+            ptsy.push_back(ref_y);
+          } else {
 
-* /ide_profiles/vscode/.vscode
-* /ide_profiles/vscode/README.md
+            ref_x = previous_path_x[prev_size-1];
+            ref_y = previous_path_y[prev_size-1];
 
-The README should explain what the profile does, how to take advantage of it,
-and how to install it.
+            double ref_x_prev = previous_path_x[prev_size-2];
+            double ref_y_prev = previous_path_y[prev_size-2];
+            ref_yaw = atan2(ref_y - ref_y_prev, ref_x - ref_x_prev);
 
-Frankly, I've never been involved in a project with multiple IDE profiles
-before. I believe the best way to handle this would be to keep them out of the
-repo root to avoid clutter. My expectation is that most profiles will include
-instructions to copy files to a new location to get picked up by the IDE, but
-that's just a guess.
+            ptsx.push_back(ref_x_prev);
+            ptsx.push_back(ref_x);
 
-One last note here: regardless of the IDE used, every submitted project must
-still be compilable with cmake and make./
+            ptsy.push_back(ref_y_prev);
+            ptsy.push_back(ref_y);
 
-## How to write a README
-A well written README file can enhance your project and portfolio.  Develop your abilities to create professional README files by completing [this free course](https://www.udacity.com/course/writing-readmes--ud777).
+          }
+
+          // add other anchor points into the anchor point set for the spline fitting
+          vector<double> next_wp0 = getXY(mycar.s+30, (2+4*mycar.lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp1 = getXY(mycar.s+60, (2+4*mycar.lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp2 = getXY(mycar.s+90, (2+4*mycar.lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+
+          ptsx.push_back(next_wp0[0]);
+          ptsx.push_back(next_wp1[0]);
+          ptsx.push_back(next_wp2[0]);
+
+          ptsy.push_back(next_wp0[1]);
+          ptsy.push_back(next_wp1[1]);
+          ptsy.push_back(next_wp2[1]);
+
+          // coordinate system transformation from global map system to local car system
+          for (int i=0; i<ptsx.size(); i++) {
+            // MPC
+            //shift car reference angle to 0 degree
+            double shift_x = ptsx[i] - ref_x;
+            double shift_y = ptsy[i] - ref_y;
+
+            ptsx[i] = (shift_x*cos(0-ref_yaw) - shift_y*sin(0-ref_yaw));
+            ptsy[i] = (shift_x*sin(0-ref_yaw) + shift_y*cos(0-ref_yaw));
+          }
+
+
+          tk::spline s_xy;
+        //   for(int i=0; i<ptsx.size();i++) {
+        //     cout<<"ptsx " <<ptsx[i]<<endl;
+        //   }
+          s_xy.set_points(ptsx, ptsy);
+
+          for (int i=0; i<prev_size; i++) {
+
+            next_x_vals.push_back(previous_path_x[i]);
+            next_y_vals.push_back(previous_path_y[i]);
+
+          }
+
+          // linearized target distance for points generation on the spline
+          double target_x = 30.0;
+          double target_y = s_xy(target_x);
+          double target_dist = sqrt(target_x*target_x+target_y*target_y);
+
+          double x_add_on = 0;
+
+          
+          // generate new points on the spline trajectory and transform back to the global map system
+          for (int i=1; i<=50-prev_size;i++) {
+
+            double N=(target_dist/(TIME_STEP*mycar.ref_vel/2.24));
+            double x_point = x_add_on + (target_x)/N;
+            double y_point = s_xy(x_point);
+
+            x_add_on = x_point;
+
+            double x_ref = x_point;
+            double y_ref = y_point;
+        
+            //rotate back to normal 
+            x_point = x_ref*cos(ref_yaw) - y_ref*sin(ref_yaw);
+            y_point = x_ref*sin(ref_yaw) + y_ref*cos(ref_yaw);
+
+            x_point += ref_x;
+            y_point += ref_y;
+
+            next_x_vals.push_back(x_point);
+            next_y_vals.push_back(y_point);
+
+          }
+
+
+```
+Since the calculation of the distance between the target point on the spline and the car origin is hard, a trick utilized here is by the linearization, such distance can be approximated as shown:
+
+![alt text](./Selection_001.png)
+*from the project guidance video*
+
+
+## Behavior planning
+
+To avoid the collision with the other surrounding cars and efficiently drive the car on the highway, behavior should be planned based on the sensor fusion information. 
+
+I keep track of the states of the six cars on the roads, i.e. the nearest front car and behind car in each lane. 
+
+First, those cars are selected and initilized by the following example codes:
+
+```
+// define six cars we should pay attention to, front and behind cars in each lane
+          vehicle left_lane_front_vehicle = vehicle();
+          vehicle left_lane_behind_vehicle = vehicle();
+
+          vector<vehicle> left_lane_vehicles = {left_lane_front_vehicle, left_lane_behind_vehicle};
+
+
+          double left_front_s = 999999;
+          double left_behind_s = -99999;
+
+          // select the nearest cars (front and behind) in each lane 
+          for (int j=0; j<sensor_fusion.size(); j++) {
+
+              float d = sensor_fusion[j][6];
+              double vx = sensor_fusion[j][3];
+              double vy = sensor_fusion[j][4];
+              double check_speed = sqrt(vx*vx+vy*vy);
+
+              double check_car_s = sensor_fusion[j][5];
+              check_car_s += (double)prev_size*TIME_STEP*check_speed;
+
+              // double check_car_behind_s = sensor_fusion[j][5];
+              // check_car_behind_s -= (double)prev_size*0.02*check_speed;
+
+
+              if (fabs(d-2-4*lanes[0])<2) {
+
+                if ((check_car_s<left_front_s)&&(mycar.s<=check_car_s)) {
+
+                  left_front_s = check_car_s;
+                  
+                  left_lane_vehicles[0].d = d;
+                  left_lane_vehicles[0].lane = lanes[0];
+                  left_lane_vehicles[0].s = sensor_fusion[j][5];
+                  left_lane_vehicles[0].speed = check_speed;
+
+                  left_lane_vehicles[0].x = sensor_fusion[j][1];
+                  left_lane_vehicles[0].y = sensor_fusion[j][2];
+                  left_lane_vehicles[0].vx = sensor_fusion[j][3];
+                  left_lane_vehicles[0].vy = sensor_fusion[j][4];
+                  left_lane_vehicles[0].yaw = atan2(left_lane_vehicles[0].vy, left_lane_vehicles[0].vx);
+
+                } else if ((check_car_s>left_behind_s)&&(check_car_s<mycar.s)) {
+
+                  left_behind_s = check_car_s;
+
+                  left_lane_vehicles[1].d = d;
+                  left_lane_vehicles[1].lane = lanes[0];
+                  left_lane_vehicles[1].s = sensor_fusion[j][5];
+                  left_lane_vehicles[1].speed = check_speed;
+
+                  left_lane_vehicles[1].x = sensor_fusion[j][1];
+                  left_lane_vehicles[1].y = sensor_fusion[j][2];
+                  left_lane_vehicles[1].vx = sensor_fusion[j][3];
+                  left_lane_vehicles[1].vy = sensor_fusion[j][4];
+                  left_lane_vehicles[1].yaw = atan2(left_lane_vehicles[1].vy, left_lane_vehicles[1].vx);
+
+                }
+
+              }
+
+          
+```
+
+Then, based on the states of those six cars, the state of my car should be updated, e.g. keep lane or change lane (which lane). 
+
+Here, I mainly expoit flags to control the situations. One can also make use of JMT and cost functions to define the best trajectory based on the candidates as introduced in the lecture. 
+
+There are three situations i.e. my car is in the left, middle and right lane. 
+
+![alt text](./left_lane.png)
+*situation consideration when my car in the left lane*
+
+![alt text](./middle_lane.png)
+*situation consideration when my car in the middle lane*
+
+For the case in the right lane, it is similar to the left case. 
+
+
+## Result
+
+By combining those modules, the example of my car driving on the road is shown as:
+
+![alt text](./result.gif)
+
+
+
+## Discussion
+
+If the car suddenly change lane in front of my car, the collision maybe happen. Also, there are other situations in the state space, for complicated ones, adding more flags can be considered. 
+
+
 
